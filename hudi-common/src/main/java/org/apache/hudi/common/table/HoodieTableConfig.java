@@ -126,6 +126,11 @@ public class HoodieTableConfig extends HoodieConfig {
       .withDocumentation("Columns used to uniquely identify the table. Concatenated values of these fields are used as "
           + " the record key component of HoodieKey.");
 
+  public static final ConfigProperty<Boolean> CDF_ENABLED = ConfigProperty
+      .key("hoodie.table.cdf.enabled")
+      .defaultValue(false)
+      .withDocumentation("When enable, hudi keeps the changing data if necessary, and can be queried as a CDC format.");
+
   public static final ConfigProperty<String> CREATE_SCHEMA = ConfigProperty
       .key("hoodie.table.create.schema")
       .noDefaultValue()
@@ -593,6 +598,10 @@ public class HoodieTableConfig extends HoodieConfig {
    */
   public String getRecordKeyFieldProp() {
     return getStringOrDefault(RECORDKEY_FIELDS, HoodieRecord.RECORD_KEY_METADATA_FIELD);
+  }
+
+  public boolean isEnabledCDF() {
+    return getBooleanOrDefault(CDF_ENABLED);
   }
 
   public String getKeyGeneratorClassName() {

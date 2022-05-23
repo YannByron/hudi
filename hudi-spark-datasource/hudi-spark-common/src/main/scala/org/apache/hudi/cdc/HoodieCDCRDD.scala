@@ -1,0 +1,212 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package org.apache.hudi.cdc
+
+import com.fasterxml.jackson.annotation.JsonInclude.Include
+import com.fasterxml.jackson.databind.{DeserializationFeature, ObjectMapper}
+import com.fasterxml.jackson.module.scala.DefaultScalaModule
+import org.apache.avro.Schema
+import org.apache.avro.generic.{GenericRecord, GenericRecordBuilder, IndexedRecord}
+import org.apache.hadoop.fs.Path
+import org.apache.hudi.AvroConversionUtils
+import org.apache.hudi.HoodieDataSourceHelper.AvroDeserializerSupport
+import org.apache.hudi.cdc.CDCFileTypeEnum._
+import org.apache.hudi.common.model.{FileSlice, HoodieFileGroupId}
+import org.apache.hudi.common.table.HoodieTableMetaClient
+import org.apache.hudi.common.table.timeline.HoodieInstant
+import org.apache.hudi.common.util.ValidationUtils.checkState
+import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
+import org.apache.spark.sql.hudi.streaming.HoodieSourceOffset.mapper
+import org.apache.spark.sql.types.StringType
+import org.apache.spark.unsafe.types.UTF8String
+//import org.apache.hudi.common.util.collection.ExternalSpillableMap
+import org.apache.hudi.exception.HoodieException
+import org.apache.hudi.{HoodieTableSchema, HoodieUnsafeRDD}
+import org.apache.spark.{Partition, SparkContext, TaskContext}
+import org.apache.spark.rdd.RDD
+import org.apache.spark.sql.catalyst.InternalRow
+import org.apache.spark.sql.execution.datasources.PartitionedFile
+import org.apache.spark.sql.types.StructType
+
+import java.io.Closeable
+
+case class HoodieCDCFileGroupSplit(
+    fileGroupId: HoodieFileGroupId,
+    commitToChanges: Array[(HoodieInstant, ChangeFileForSingleFileGroup)],
+    dependentFileSlice: Option[FileSlice]
+)
+
+case class HoodieCDCFileGroupPartition(
+    index: Int,
+    split: HoodieCDCFileGroupSplit
+) extends Partition
+
+class HoodieCDCRDD(
+    @transient sc: SparkContext,
+    metaClient: HoodieTableMetaClient,
+    parquetReader: PartitionedFile => Iterator[InternalRow],
+    tableSchema: HoodieTableSchema,
+    @transient changes: Array[HoodieCDCFileGroupSplit])
+  extends RDD[InternalRow](sc, Nil) with HoodieUnsafeRDD {
+
+  override def compute(split: Partition, context: TaskContext): Iterator[InternalRow] = {
+    val cdcPartition = split.asInstanceOf[HoodieCDCFileGroupPartition]
+    new CDCFileGroupIterator(cdcPartition.split, metaClient)
+  }
+
+  override protected def getPartitions: Array[Partition] = {
+    changes.zipWithIndex.map{ case (split, index) =>
+      HoodieCDCFileGroupPartition(index, split)
+    }
+  }
+
+  private class CDCFileGroupIterator(
+      split: HoodieCDCFileGroupSplit,
+      metaClient: HoodieTableMetaClient
+    ) extends Iterator[InternalRow] with AvroDeserializerSupport with Closeable {
+
+    private val fs = metaClient.getFs.getFileSystem
+
+    private val basePath = metaClient.getBasePathV2
+
+    private val fileGroupId= split.fileGroupId
+
+    private lazy val mapper: ObjectMapper = {
+      val _mapper = new ObjectMapper
+      _mapper.setSerializationInclusion(Include.NON_ABSENT)
+      _mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
+      _mapper.registerModule(DefaultScalaModule)
+      _mapper
+    }
+
+    private val avroSchema = new Schema.Parser().parse(tableSchema.avroSchemaStr)
+
+    private val serializer = sparkAdapter.createAvroSerializer(tableSchema.structTypeSchema,
+      avroSchema, resolveAvroSchemaNullability(avroSchema))
+
+    private val deserializer = sparkAdapter.createAvroDeserializer(avroSchema, tableSchema.structTypeSchema)
+
+    private val cdcFileInter = split.commitToChanges.iterator
+
+    private var recordIter: Iterator[InternalRow] = Iterator.empty
+
+    private var currentInstant: HoodieInstant = _
+
+    private var currentCdcFile: ChangeFileForSingleFileGroup = _
+
+    protected override val requiredAvroSchema: Schema = new Schema.Parser().parse(tableSchema.avroSchemaStr)
+    protected override val requiredStructTypeSchema: StructType = tableSchema.structTypeSchema
+
+    protected val unsafeProjection: UnsafeProjection = UnsafeProjection.create(requiredStructTypeSchema)
+
+    protected var recordToLoad: InternalRow = _
+
+    override def hasNext: Boolean = {
+      if (!recordIter.hasNext) {
+        loadCdcFile()
+        resetRecordFormat()
+      }
+      recordIter.hasNext
+    }
+
+    override final def next(): InternalRow = {
+      val originRecord = recordIter.next()
+//      val xx = serializer.serialize(originRecord).asInstanceOf[GenericRecord]
+//      val record = deserializer.deserialize(xx).get.asInstanceOf[InternalRow]
+      currentCdcFile.cdcFileType match {
+        case PureAddFile =>
+          recordToLoad.update(3, convertRowToJsonString(originRecord))
+        case PureRemoveFile =>
+          recordToLoad.update(2, convertRowToJsonString(originRecord))
+        case CDCLogFile =>
+          throw new HoodieException("Not support CDCLogFile.")
+        case MorLogFile =>
+          // 和前置的records合并，得到cdc格式数据；
+          throw new HoodieException("Not support MorLogFile.")
+      }
+      recordToLoad
+    }
+
+    private def loadCdcFile(): Unit = {
+      if (cdcFileInter.hasNext) {
+        val pair = cdcFileInter.next()
+        currentInstant = pair._1
+        currentCdcFile = pair._2
+        currentCdcFile.cdcFileType match {
+          case PureAddFile | PureRemoveFile =>
+            val absCDCPath = new Path(basePath, currentCdcFile.cdcFile)
+            val fileStatus = fs.getFileStatus(absCDCPath)
+            val pf = PartitionedFile(InternalRow.empty, absCDCPath.toUri.toString, 0, fileStatus.getLen)
+            recordIter = parquetReader(pf)
+          case CDCLogFile =>
+            throw new HoodieException("Not support CDCLogFile.")
+          case MorLogFile =>
+            throw new HoodieException("Not support MorLogFile.")
+        }
+      }
+    }
+
+    private def resetRecordFormat(): Unit = {
+      recordToLoad = currentCdcFile.cdcFileType match {
+        case PureAddFile =>
+          InternalRow.fromSeq(Array(
+            CDCRelation.CDC_OPERATION_INSERT,
+            convertToUTF8String(currentInstant.getTimestamp),
+            null,
+            null))
+        case PureRemoveFile =>
+          InternalRow.fromSeq(
+            Array(
+              CDCRelation.CDC_OPERATION_DELETE,
+              convertToUTF8String(currentInstant.getTimestamp),
+              null,
+              null))
+        case CDCLogFile =>
+          InternalRow.fromSeq(Array(null, convertToUTF8String(currentInstant.getTimestamp), null, null))
+        case MorLogFile =>
+          InternalRow.fromSeq(Array(null, convertToUTF8String(currentInstant.getTimestamp), null, null))
+      }
+    }
+
+    private def convertRowToJsonString(record: InternalRow): UTF8String = {
+      val map = scala.collection.mutable.Map.empty[String, Any]
+      val m = tableSchema.structTypeSchema.zipWithIndex.foreach {
+        case (field, idx) =>
+          if (field.dataType.isInstanceOf[StringType]) {
+            map(field.name) = record.getString(idx)
+          } else {
+            map(field.name) = record.get(idx, field.dataType)
+          }
+      }
+      convertToUTF8String(mapper.writeValueAsString(map))
+    }
+
+    private def convertToUTF8String(str: String): UTF8String = {
+      UTF8String.fromString(str)
+    }
+
+    private def resolveAvroSchemaNullability(schema: Schema) = {
+      AvroConversionUtils.resolveAvroTypeNullability(schema) match {
+        case (nullable, _) => nullable
+      }
+    }
+
+    override def close(): Unit = {}
+  }
+}

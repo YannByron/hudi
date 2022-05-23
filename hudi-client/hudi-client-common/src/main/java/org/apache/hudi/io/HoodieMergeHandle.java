@@ -101,6 +101,8 @@ public class HoodieMergeHandle<T extends HoodieRecordPayload, I, K, O> extends H
   protected Map<String, HoodieRecord<T>> keyToNewRecords;
   protected Set<String> writtenRecordKeys;
   protected HoodieFileWriter<IndexedRecord> fileWriter;
+  // writer for cdc data
+  protected HoodieFileWriter<IndexedRecord> cdcWriter;
   private boolean preserveMetadata = false;
 
   protected Path newFilePath;

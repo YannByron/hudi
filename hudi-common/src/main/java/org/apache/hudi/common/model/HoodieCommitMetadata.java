@@ -22,7 +22,9 @@ import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.Path;
@@ -35,12 +37,7 @@ import org.apache.log4j.Logger;
 import java.io.IOException;
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -236,6 +233,37 @@ public class HoodieCommitMetadata implements Serializable {
       return clazz.newInstance();
     }
     return getObjectMapper().readValue(jsonStr, clazz);
+  }
+
+  public static Map<HoodieFileGroupId, Pair<String, List<String>>> getFileSliceForDeltaCommit(byte[] bytes) throws Exception {
+    String jsonStr = new String(bytes, StandardCharsets.UTF_8);
+    if (jsonStr == null || jsonStr.isEmpty()) {
+      return null;
+    }
+    Map<HoodieFileGroupId, Pair<String, List<String>>> fgToSlice = new HashMap<>();
+    JsonNode ptToWriteStatsMap = getObjectMapper().readTree(jsonStr).get("partitionToWriteStats");
+    Iterator<Map.Entry<String, JsonNode>> pts = ptToWriteStatsMap.fields();
+    while (pts.hasNext()) {
+      Map.Entry<String, JsonNode> ptToWriteStats = pts.next();
+      if (ptToWriteStats.getValue().isArray()) {
+        Iterator<JsonNode> writeStatsIter = ptToWriteStats.getValue().iterator();
+
+        while (writeStatsIter.hasNext()) {
+          JsonNode writeStat = writeStatsIter.next();
+          if (writeStat.hasNonNull("baseFile")) {
+            HoodieFileGroupId fgId = new HoodieFileGroupId(ptToWriteStats.getKey(), writeStat.get("fileId").asText());
+            String baseFile = writeStat.get("baseFile").asText();
+            ArrayNode logFilesNode = (ArrayNode) writeStat.get("logFiles");
+            List<String> logFiles = new ArrayList<>();
+            for (JsonNode logFile : logFilesNode) {
+              logFiles.add(logFile.asText());
+            }
+            fgToSlice.put(fgId, Pair.of(baseFile, logFiles));
+          }
+        }
+      }
+    }
+    return fgToSlice;
   }
 
   // Here the functions are named "fetch" instead of "get", to get avoid of the json conversion.

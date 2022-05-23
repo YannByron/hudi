@@ -45,6 +45,11 @@ public class HoodieWriteStat implements Serializable {
   private String path;
 
   /**
+   * Relative cdc file path that store the CDC data.
+   */
+  private String cdcPath;
+
+  /**
    * The previous version of the file. (null if this is the first version. i.e insert)
    */
   private String prevCommit;
@@ -233,6 +238,10 @@ public class HoodieWriteStat implements Serializable {
 
   public String getPath() {
     return path;
+  }
+
+  public String getCDCPath() {
+    return cdcPath;
   }
 
   public String getPartitionPath() {

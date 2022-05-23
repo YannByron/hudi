@@ -20,6 +20,7 @@ package org.apache.hudi
 import org.apache.hadoop.fs.Path
 import org.apache.hudi.DataSourceReadOptions._
 import org.apache.hudi.DataSourceWriteOptions.{BOOTSTRAP_OPERATION_OPT_VAL, OPERATION}
+import org.apache.hudi.cdc.CDCRelation
 import org.apache.hudi.common.fs.FSUtils
 import org.apache.hudi.common.model.HoodieRecord
 import org.apache.hudi.common.model.HoodieTableType.{COPY_ON_WRITE, MERGE_ON_READ}
@@ -107,6 +108,8 @@ class DefaultSource extends RelationProvider
       new EmptyRelation(sqlContext, metaClient)
     } else {
       (tableType, queryType, isBootstrappedTable) match {
+        case (_, QUERY_TYPE_CDC_OPT_VAL, _) =>
+          CDCRelation.getCDCRelation(sqlContext, metaClient, parameters)
         case (COPY_ON_WRITE, QUERY_TYPE_SNAPSHOT_OPT_VAL, false) |
              (COPY_ON_WRITE, QUERY_TYPE_READ_OPTIMIZED_OPT_VAL, false) |
              (MERGE_ON_READ, QUERY_TYPE_READ_OPTIMIZED_OPT_VAL, false) =>

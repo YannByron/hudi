@@ -55,7 +55,7 @@ class MergeOnReadSnapshotRelation(sqlContext: SQLContext,
 
   override def imbueConfigs(sqlContext: SQLContext): Unit = {
     super.imbueConfigs(sqlContext)
-    sqlContext.sparkSession.sessionState.conf.setConfString("spark.sql.parquet.enableVectorizedReader", "true")
+    sqlContext.sparkSession.sessionState.conf.setConfString("spark.sql.parquet.enableVectorizedReader", "false")
   }
 
   protected override def composeRDD(fileSplits: Seq[HoodieMergeOnReadFileSplit],

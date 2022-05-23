@@ -689,6 +689,7 @@ public class HoodieTableMetaClient implements Serializable {
     private String baseFileFormat;
     private String preCombineField;
     private String partitionFields;
+    private Boolean cdfEnabled;
     private String bootstrapIndexClass;
     private String bootstrapBasePath;
     private Boolean bootstrapIndexEnable;
@@ -772,6 +773,11 @@ public class HoodieTableMetaClient implements Serializable {
 
     public PropertyBuilder setPartitionFields(String partitionFields) {
       this.partitionFields = partitionFields;
+      return this;
+    }
+
+    public PropertyBuilder setCDFEnabled(boolean cdfEnabled) {
+      this.cdfEnabled = cdfEnabled;
       return this;
     }
 
@@ -915,6 +921,9 @@ public class HoodieTableMetaClient implements Serializable {
       if (hoodieConfig.contains(HoodieTableConfig.RECORDKEY_FIELDS)) {
         setRecordKeyFields(hoodieConfig.getString(HoodieTableConfig.RECORDKEY_FIELDS));
       }
+      if (hoodieConfig.contains(HoodieTableConfig.CDF_ENABLED)) {
+        setCDFEnabled(hoodieConfig.getBoolean(HoodieTableConfig.CDF_ENABLED));
+      }
       if (hoodieConfig.contains(HoodieTableConfig.CREATE_SCHEMA)) {
         setTableCreateSchema(hoodieConfig.getString(HoodieTableConfig.CREATE_SCHEMA));
       }
@@ -1004,6 +1013,9 @@ public class HoodieTableMetaClient implements Serializable {
       }
       if (null != recordKeyFields) {
         tableConfig.setValue(HoodieTableConfig.RECORDKEY_FIELDS, recordKeyFields);
+      }
+      if (null != cdfEnabled) {
+        tableConfig.setValue(HoodieTableConfig.CDF_ENABLED, Boolean.toString(cdfEnabled));
       }
       if (null != populateMetaFields) {
         tableConfig.setValue(HoodieTableConfig.POPULATE_META_FIELDS, Boolean.toString(populateMetaFields));

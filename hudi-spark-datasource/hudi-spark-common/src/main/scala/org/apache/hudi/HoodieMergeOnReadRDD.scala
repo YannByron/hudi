@@ -24,7 +24,8 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.hadoop.mapred.JobConf
 import org.apache.hudi.HoodieConversionUtils.{toJavaOption, toScalaOption}
-import org.apache.hudi.HoodieMergeOnReadRDD.{AvroDeserializerSupport, collectFieldOrdinals, getPartitionPath, projectAvro, projectAvroUnsafe, projectRowUnsafe, resolveAvroSchemaNullability}
+import org.apache.hudi.HoodieDataSourceHelper.AvroDeserializerSupport
+import org.apache.hudi.HoodieMergeOnReadRDD.{collectFieldOrdinals, getPartitionPath, projectAvro, projectAvroUnsafe, projectRowUnsafe, resolveAvroSchemaNullability}
 import org.apache.hudi.MergeOnReadSnapshotRelation.getFilePath
 import org.apache.hudi.common.config.HoodieMetadataConfig
 import org.apache.hudi.common.engine.HoodieLocalEngineContext
@@ -445,19 +446,6 @@ private object HoodieMergeOnReadRDD {
   private def resolveAvroSchemaNullability(schema: Schema) = {
     AvroConversionUtils.resolveAvroTypeNullability(schema) match {
       case (nullable, _) => nullable
-    }
-  }
-
-  trait AvroDeserializerSupport extends SparkAdapterSupport {
-    protected val requiredAvroSchema: Schema
-    protected val requiredStructTypeSchema: StructType
-
-    private lazy val deserializer: HoodieAvroDeserializer =
-      sparkAdapter.createAvroDeserializer(requiredAvroSchema, requiredStructTypeSchema)
-
-    protected def deserialize(avroRecord: GenericRecord): InternalRow = {
-      checkState(avroRecord.getSchema.getFields.size() == requiredStructTypeSchema.fields.length)
-      deserializer.deserialize(avroRecord).get.asInstanceOf[InternalRow]
     }
   }
 }
