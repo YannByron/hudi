@@ -152,16 +152,18 @@ class CDCRelation(
       val changesArr = instantToWriteStatAndChanges.map { case (instant, (writeStat, changes)) =>
         (instant, changes)
       }.toArray.sortBy(_._1)
-      val fileSlice = changesArr.find(_._2.cdcFileType == MorLogFile).map {
+      val commitTimeAndFileSlice = changesArr.find(_._2.cdcFileType == MorLogFile).map {
         case (instant, changeFile) =>
           // if the cdc path is a log file, we need to find the base file and its preceding
           // log files which will be used when load this log file.
           // And since the commit scope read by CDC is continuous and the change
           // of the same file group is also continuous, we only need to find the preceding
           // file slice of the earliest commit required.
-          buildDependentFileSliceForLogFile(fgId, instant, changeFile.cdcFile, instantToWriteStatAndChanges(instant)._1)
+          val fileSlice = buildDependentFileSliceForLogFile(
+            fgId, instant, changeFile.cdcFile, instantToWriteStatAndChanges(instant)._1)
+          (instant.getTimestamp, fileSlice)
       }
-      (fgId, HoodieCDCFileGroupSplit(fgId, changesArr, fileSlice))
+      (fgId, HoodieCDCFileGroupSplit(fgId, changesArr, commitTimeAndFileSlice))
     }.toMap
   }
 
@@ -181,7 +183,7 @@ class CDCRelation(
       hadoopConf = conf
     )
     new HoodieCDCRDD(
-      spark.sparkContext,
+      spark,
       metaClient,
       parquetReader,
       tableSchema,

@@ -22,19 +22,21 @@ import com.fasterxml.jackson.annotation.JsonInclude.Include
 import com.fasterxml.jackson.databind.{DeserializationFeature, ObjectMapper}
 import com.fasterxml.jackson.module.scala.DefaultScalaModule
 import org.apache.avro.Schema
-import org.apache.avro.generic.{GenericRecord, GenericRecordBuilder, IndexedRecord}
 import org.apache.hadoop.fs.Path
-import org.apache.hudi.AvroConversionUtils
+import org.apache.hudi.{AvroConversionUtils, DataSourceWriteOptions, HoodieFileIndex, HoodieMergeOnReadFileSplit, HoodieTableState, LogFileIterator, RecordMergingFileIterator}
 import org.apache.hudi.HoodieDataSourceHelper.AvroDeserializerSupport
 import org.apache.hudi.cdc.CDCFileTypeEnum._
-import org.apache.hudi.common.model.{FileSlice, HoodieFileGroupId}
+import org.apache.hudi.common.config.HoodieMetadataConfig
+import org.apache.hudi.common.model.{FileSlice, HoodieFileGroupId, HoodieLogFile, HoodieRecord, HoodieRecordPayload}
 import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.common.table.timeline.HoodieInstant
+import org.apache.hudi.common.util.StringUtils
 import org.apache.hudi.common.util.ValidationUtils.checkState
-import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
-import org.apache.spark.sql.hudi.streaming.HoodieSourceOffset.mapper
+import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.types.StringType
 import org.apache.spark.unsafe.types.UTF8String
+
+import java.util.stream.Collectors
 //import org.apache.hudi.common.util.collection.ExternalSpillableMap
 import org.apache.hudi.exception.HoodieException
 import org.apache.hudi.{HoodieTableSchema, HoodieUnsafeRDD}
@@ -45,11 +47,13 @@ import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.types.StructType
 
 import java.io.Closeable
+import scala.collection.JavaConverters._
+import scala.collection.mutable
 
 case class HoodieCDCFileGroupSplit(
     fileGroupId: HoodieFileGroupId,
     commitToChanges: Array[(HoodieInstant, ChangeFileForSingleFileGroup)],
-    dependentFileSlice: Option[FileSlice]
+    dependentFileSlice: Option[(String, FileSlice)]
 )
 
 case class HoodieCDCFileGroupPartition(
@@ -58,12 +62,14 @@ case class HoodieCDCFileGroupPartition(
 ) extends Partition
 
 class HoodieCDCRDD(
-    @transient sc: SparkContext,
+    spark: SparkSession,
     metaClient: HoodieTableMetaClient,
     parquetReader: PartitionedFile => Iterator[InternalRow],
     tableSchema: HoodieTableSchema,
-    @transient changes: Array[HoodieCDCFileGroupSplit])
-  extends RDD[InternalRow](sc, Nil) with HoodieUnsafeRDD {
+    changes: Array[HoodieCDCFileGroupSplit])
+  extends RDD[InternalRow](spark.sparkContext, Nil) with HoodieUnsafeRDD {
+
+  private val hadoopConf = spark.sparkContext.hadoopConfiguration
 
   override def compute(split: Partition, context: TaskContext): Iterator[InternalRow] = {
     val cdcPartition = split.asInstanceOf[HoodieCDCFileGroupPartition]
@@ -113,9 +119,71 @@ class HoodieCDCRDD(
     protected override val requiredAvroSchema: Schema = new Schema.Parser().parse(tableSchema.avroSchemaStr)
     protected override val requiredStructTypeSchema: StructType = tableSchema.structTypeSchema
 
-    protected val unsafeProjection: UnsafeProjection = UnsafeProjection.create(requiredStructTypeSchema)
+//    protected val unsafeProjection: UnsafeProjection = UnsafeProjection.create(requiredStructTypeSchema)
 
     protected var recordToLoad: InternalRow = _
+
+    private val recordKeyField: String = if (metaClient.getTableConfig.populateMetaFields()) {
+      HoodieRecord.RECORD_KEY_METADATA_FIELD
+    } else {
+      val keyFields = metaClient.getTableConfig.getRecordKeyFields.get()
+      checkState(keyFields.length == 1)
+      keyFields.head
+    }
+
+    private val preCombineFieldOpt: Option[String] = Option(metaClient.getTableConfig.getPreCombineField)
+
+    private val (commitTime, fileSlice) = split.dependentFileSlice.get
+
+    private val tableState = {
+      val props = HoodieFileIndex.getConfigProperties(spark, Map.empty)
+      val metadataConfig = HoodieMetadataConfig.newBuilder()
+        .fromProperties(props)
+        .build();
+      HoodieTableState(
+        pathToString(basePath),
+        commitTime,
+        recordKeyField,
+        preCombineFieldOpt,
+        false,
+        metaClient.getTableConfig.getPayloadClass,
+        metadataConfig
+      )
+    }
+
+    private val records: mutable.Map[String, InternalRow] = {
+      val baseFileStatus = fileSlice.getBaseFile.get().getFileStatus
+      val basePartitionedFile = PartitionedFile(
+        InternalRow.empty,
+        pathToString(baseFileStatus.getPath),
+        0,
+        baseFileStatus.getLen
+      )
+      val logFiles = fileSlice.getLogFiles
+        .sorted(HoodieLogFile.getLogFileComparator)
+        .collect(Collectors.toList[HoodieLogFile])
+        .asScala.toList
+      val iter = if (logFiles.isEmpty) {
+        parquetReader(basePartitionedFile)
+      } else {
+        val morSplit = HoodieMergeOnReadFileSplit(Some(basePartitionedFile), logFiles)
+        val baseIter = parquetReader(basePartitionedFile)
+        new RecordMergingFileIterator(
+          morSplit,
+          baseIter,
+          tableSchema,
+          tableSchema,
+          tableSchema,
+          tableState,
+          hadoopConf)
+      }
+      val mm = mutable.Map.empty[String, InternalRow]
+      while (iter.hasNext) {
+        val row = iter.next()
+        mm(row.getString(2)) = row
+      }
+      mm
+    }
 
     override def hasNext: Boolean = {
       if (!recordIter.hasNext) {
@@ -138,6 +206,7 @@ class HoodieCDCRDD(
           throw new HoodieException("Not support CDCLogFile.")
         case MorLogFile =>
           // 和前置的records合并，得到cdc格式数据；
+          // ..............
           throw new HoodieException("Not support MorLogFile.")
       }
       recordToLoad
@@ -157,9 +226,16 @@ class HoodieCDCRDD(
           case CDCLogFile =>
             throw new HoodieException("Not support CDCLogFile.")
           case MorLogFile =>
-            throw new HoodieException("Not support MorLogFile.")
+            val absLogPath = new Path(basePath, currentCdcFile.cdcFile)
+            val morSplit = HoodieMergeOnReadFileSplit(None, List(new HoodieLogFile(fs.getFileStatus(absLogPath))))
+            recordIter = new LogFileIterator(morSplit, tableSchema, tableSchema, tableState, hadoopConf)
         }
       }
+    }
+
+    private def initDependentRecords(): Unit = {
+      split.dependentFileSlice
+
     }
 
     private def resetRecordFormat(): Unit = {
@@ -186,7 +262,7 @@ class HoodieCDCRDD(
 
     private def convertRowToJsonString(record: InternalRow): UTF8String = {
       val map = scala.collection.mutable.Map.empty[String, Any]
-      val m = tableSchema.structTypeSchema.zipWithIndex.foreach {
+      tableSchema.structTypeSchema.zipWithIndex.foreach {
         case (field, idx) =>
           if (field.dataType.isInstanceOf[StringType]) {
             map(field.name) = record.getString(idx)
@@ -205,6 +281,10 @@ class HoodieCDCRDD(
       AvroConversionUtils.resolveAvroTypeNullability(schema) match {
         case (nullable, _) => nullable
       }
+    }
+
+    private def pathToString(p: Path): String = {
+      p.toUri.toString
     }
 
     override def close(): Unit = {}
