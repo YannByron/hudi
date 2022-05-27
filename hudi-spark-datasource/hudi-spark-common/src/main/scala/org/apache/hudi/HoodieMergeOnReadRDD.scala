@@ -151,22 +151,22 @@ class HoodieMergeOnReadRDD(@transient sc: SparkContext,
                                 config: Configuration)
     extends Iterator[InternalRow] with Closeable with AvroDeserializerSupport {
 
-    protected override val requiredAvroSchema: Schema = new Schema.Parser().parse(requiredSchema.avroSchemaStr)
-    protected override val requiredStructTypeSchema: StructType = requiredSchema.structTypeSchema
+    protected override val avroSchema: Schema = new Schema.Parser().parse(requiredSchema.avroSchemaStr)
+    protected override val structTypeSchema: StructType = requiredSchema.structTypeSchema
 
     protected val logFileReaderAvroSchema: Schema = new Schema.Parser().parse(tableSchema.avroSchemaStr)
 
-    protected val recordBuilder: GenericRecordBuilder = new GenericRecordBuilder(requiredAvroSchema)
+    protected val recordBuilder: GenericRecordBuilder = new GenericRecordBuilder(avroSchema)
     protected var recordToLoad: InternalRow = _
 
     // TODO validate whether we need to do UnsafeProjection
-    protected val unsafeProjection: UnsafeProjection = UnsafeProjection.create(requiredStructTypeSchema)
+    protected val unsafeProjection: UnsafeProjection = UnsafeProjection.create(structTypeSchema)
 
     // NOTE: This maps _required_ schema fields onto the _full_ table schema, collecting their "ordinals"
     //       w/in the record payload. This is required, to project records read from the Delta Log file
     //       which always reads records in full schema (never projected, due to the fact that DL file might
     //       be stored in non-columnar formats like Avro, HFile, etc)
-    private val requiredSchemaFieldOrdinals: List[Int] = collectFieldOrdinals(requiredAvroSchema, logFileReaderAvroSchema)
+    private val requiredSchemaFieldOrdinals: List[Int] = collectFieldOrdinals(avroSchema, logFileReaderAvroSchema)
 
     // TODO: now logScanner with internalSchema support column project, we may no need projectAvroUnsafe
     private var logScanner =
@@ -183,7 +183,7 @@ class HoodieMergeOnReadRDD(@transient sc: SparkContext,
         case (_, record) =>
           val avroRecordOpt = toScalaOption(record.getData.getInsertValue(logFileReaderAvroSchema, payloadProps))
           avroRecordOpt.map {
-            avroRecord => projectAvroUnsafe(avroRecord, requiredAvroSchema, requiredSchemaFieldOrdinals, recordBuilder)
+            avroRecord => projectAvroUnsafe(avroRecord, avroSchema, requiredSchemaFieldOrdinals, recordBuilder)
           }
       }
 
@@ -258,7 +258,7 @@ class HoodieMergeOnReadRDD(@transient sc: SparkContext,
     //       As such, no particular schema could be assumed, and therefore we rely on the caller
     //       to correspondingly set the scheme of the expected output of base-file reader
     private val baseFileReaderAvroSchema = new Schema.Parser().parse(baseFileReaderSchema.avroSchemaStr)
-    private val requiredSchemaFieldOrdinals: List[Int] = collectFieldOrdinals(requiredAvroSchema, baseFileReaderAvroSchema)
+    private val requiredSchemaFieldOrdinals: List[Int] = collectFieldOrdinals(avroSchema, baseFileReaderAvroSchema)
 
     private val serializer = sparkAdapter.createAvroSerializer(baseFileReaderSchema.structTypeSchema,
       baseFileReaderAvroSchema, resolveAvroSchemaNullability(baseFileReaderAvroSchema))
@@ -290,7 +290,7 @@ class HoodieMergeOnReadRDD(@transient sc: SparkContext,
             //       might already be read in projected one (as an optimization).
             //       As such we can't use more performant [[projectAvroUnsafe]], and instead have to fallback
             //       to [[projectAvro]]
-            val projectedAvroRecord = projectAvro(mergedAvroRecordOpt.get, requiredAvroSchema, recordBuilder)
+            val projectedAvroRecord = projectAvro(mergedAvroRecordOpt.get, avroSchema, recordBuilder)
             recordToLoad = unsafeProjection(deserialize(projectedAvroRecord))
             true
           }

@@ -107,14 +107,14 @@ object HoodieDataSourceHelper extends PredicateHelper with SparkAdapterSupport {
   }
 
   trait AvroDeserializerSupport extends SparkAdapterSupport {
-    protected val requiredAvroSchema: Schema
-    protected val requiredStructTypeSchema: StructType
+    protected val avroSchema: Schema
+    protected val structTypeSchema: StructType
 
     private lazy val deserializer: HoodieAvroDeserializer =
-      sparkAdapter.createAvroDeserializer(requiredAvroSchema, requiredStructTypeSchema)
+      sparkAdapter.createAvroDeserializer(avroSchema, structTypeSchema)
 
     protected def deserialize(avroRecord: GenericRecord): InternalRow = {
-      checkState(avroRecord.getSchema.getFields.size() == requiredStructTypeSchema.fields.length)
+      checkState(avroRecord.getSchema.getFields.size() == structTypeSchema.fields.length)
       deserializer.deserialize(avroRecord).get.asInstanceOf[InternalRow]
     }
   }

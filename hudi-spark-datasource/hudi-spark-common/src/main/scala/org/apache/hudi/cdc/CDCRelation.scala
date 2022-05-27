@@ -19,26 +19,39 @@
 package org.apache.hudi.cdc
 
 import org.apache.avro.Schema
+
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.{FileStatus, FileSystem, Path}
+import org.apache.hadoop.fs.{FileSystem, Path}
+
 import org.apache.hudi.cdc.CDCFileTypeEnum._
-import org.apache.hudi.{AvroConversionUtils, DataSourceReadOptions, HoodieDataSourceHelper, HoodieFileIndex, HoodieTableSchema}
-import org.apache.hudi.client.common.HoodieSparkEngineContext
-import org.apache.hudi.common.config.HoodieMetadataConfig
+import org.apache.hudi.AvroConversionUtils
+import org.apache.hudi.DataSourceReadOptions
+import org.apache.hudi.HoodieDataSourceHelper
+import org.apache.hudi.HoodieTableSchema
 import org.apache.hudi.common.fs.FSUtils
-import org.apache.hudi.common.model.{FileSlice, HoodieBaseFile, HoodieCommitMetadata, HoodieDeltaWriteStat, HoodieFileFormat, HoodieFileGroup, HoodieFileGroupId, HoodieLogFile, HoodieWriteStat, WriteOperationType}
-import org.apache.hudi.common.table.timeline.{HoodieInstant, HoodieTimeline}
-import org.apache.hudi.common.table.view.FileSystemViewStorageConfig
-import org.apache.hudi.common.table.{HoodieTableConfig, HoodieTableMetaClient, TableSchemaResolver}
+import org.apache.hudi.common.model.FileSlice
+import org.apache.hudi.common.model.HoodieBaseFile
+import org.apache.hudi.common.model.HoodieCommitMetadata
+import org.apache.hudi.common.model.HoodieFileFormat
+import org.apache.hudi.common.model.HoodieFileGroupId
+import org.apache.hudi.common.model.HoodieLogFile
+import org.apache.hudi.common.model.HoodieWriteStat
+import org.apache.hudi.common.model.WriteOperationType
+import org.apache.hudi.common.table.timeline.HoodieInstant
+import org.apache.hudi.common.table.timeline.HoodieTimeline
+import org.apache.hudi.common.table.HoodieTableConfig
+import org.apache.hudi.common.table.HoodieTableMetaClient
+import org.apache.hudi.common.table.TableSchemaResolver
 import org.apache.hudi.common.util.StringUtils
 import org.apache.hudi.exception.HoodieException
 import org.apache.hudi.internal.schema.InternalSchema
+
 import org.apache.spark.api.java.JavaSparkContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.{Row, SQLContext, SparkSession}
 import org.apache.spark.sql.sources.{BaseRelation, Filter, PrunedFilteredScan}
-import org.apache.spark.sql.types.{LongType, StringType, StructField, StructType}
+import org.apache.spark.sql.types.{StringType, StructField, StructType}
 import org.apache.spark.unsafe.types.UTF8String
 
 import scala.collection.JavaConverters._
@@ -93,25 +106,6 @@ class CDCRelation(
   val touchedPartition: Set[String] = commits.flatMap { case (_, commitMetadata) =>
     commitMetadata.getPartitionToWriteStats.keySet().asScala
   }.toSet
-
-//  val partitionToDataFiles: Map[String, Array[FileStatus]] = {
-//    val engineContext = new HoodieSparkEngineContext(new JavaSparkContext(spark.sparkContext))
-//    val configProperties = HoodieFileIndex.getConfigProperties(spark, options)
-//    val metadataConfig = HoodieMetadataConfig.newBuilder()
-//      .fromProperties(configProperties)
-//      .build()
-//    val fileSystemStorageConfig = FileSystemViewStorageConfig.newBuilder()
-//      .fromProperties(configProperties)
-//      .build()
-//    val partitionAbsPaths = touchedPartition.toArray.map(new Path(basePath, _).toString)
-//    FSUtils.getFilesInPartitions(
-//      engineContext,
-//      metadataConfig,
-//      basePath.toString,
-//      partitionAbsPaths,
-//      fileSystemStorageConfig.getSpillableDir
-//    ).asScala.toMap
-//  }
 
   val changeFilesPerFileGroupAndCommit: Map[HoodieFileGroupId, HoodieCDCFileGroupSplit] = {
     // At the granularity of a file group, keep the mapping between each commit and
@@ -214,13 +208,14 @@ class CDCRelation(
           // all the records in this file are new.
           (PureAddFile, path)
         } else {
-          throw new HoodieException("That should not be here.")
+          throw new HoodieException("There should be a cdc log file.")
         }
       } else {
         // this is a log file
         (MorLogFile, path)
       }
     } else {
+      // this is a cdc log
       (CDCLogFile, writeStat.getCDCPath)
     }
   }
@@ -266,9 +261,9 @@ object CDCRelation {
   /* the post image after one record is changed */
   val CDC_AFTER_IMAGE = "after"
 
-  val CDC_OPERATION_DELETE = UTF8String.fromString("d")
-  val CDC_OPERATION_INSERT = UTF8String.fromString("i")
-  val CDC_OPERATION_UPDATE = UTF8String.fromString("u")
+  val CDC_OPERATION_DELETE: UTF8String = UTF8String.fromString("d")
+  val CDC_OPERATION_INSERT: UTF8String = UTF8String.fromString("i")
+  val CDC_OPERATION_UPDATE: UTF8String = UTF8String.fromString("u")
 
   def cdcSchema(): StructType = {
     StructType(
