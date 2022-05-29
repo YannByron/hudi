@@ -24,7 +24,7 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.hudi.cdc.CDCFileTypeEnum._
-import org.apache.hudi.{AvroConversionUtils, DataSourceReadOptions, HoodieDataSourceHelper, HoodieTableSchema}
+import org.apache.hudi.{AvroConversionUtils, DataSourceReadOptions, HoodieDataSourceHelper, HoodieTableSchema, SparkAdapterSupport}
 import org.apache.hudi.HoodieConversionUtils._
 import org.apache.hudi.common.fs.FSUtils
 import org.apache.hudi.common.model.{FileSlice, HoodieBaseFile, HoodieCommitMetadata, HoodieFileFormat, HoodieFileGroupId, HoodieLogFile, HoodieReplaceCommitMetadata, HoodieWriteStat, WriteOperationType}
@@ -170,6 +170,7 @@ class CDCRelation(
   override def schema: StructType = CDCRelation.cdcSchema()
 
   override def buildScan(requiredColumns: Array[String], filters: Array[Filter]): RDD[Row] = {
+    val requiredSchema = StructType(schema.filter( field => requiredColumns.contains(field.name)))
     val tableSchema = HoodieTableSchema(tableStructSchema, tableAvroSchema.toString)
     val parquetReader = HoodieDataSourceHelper.buildHoodieParquetReader(
       sparkSession = spark,
@@ -180,13 +181,16 @@ class CDCRelation(
       options = options,
       hadoopConf = conf
     )
-    new HoodieCDCRDD(
+    val cdcRdd = new HoodieCDCRDD(
       spark,
       metaClient,
       parquetReader,
       tableSchema,
+      schema,
+      requiredSchema,
       changeFilesPerFileGroupAndCommit.values.toArray
-    ).asInstanceOf[RDD[Row]]
+    )
+    cdcRdd.asInstanceOf[RDD[Row]]
   }
 
   private def getPrevCommitFileWithSameFG(fgId: HoodieFileGroupId, commitTime: String): String = {

@@ -76,6 +76,7 @@ class TestCDC extends HoodieClientTestBase with SparkDatasetMixin {
         .option("hoodie.datasource.read.begin.instanttime", "20220527232309507")
 //        .option("hoodie.datasource.read.end.instanttime", "20220527232727644")
         .load("file:////Users/xunjing/hudi/hudi_cdc_mor_pt2")
-    rows.show(false)
+//    rows.select("before").show(false)
+    println(rows.where("op = 'd'").count())
   }
 }

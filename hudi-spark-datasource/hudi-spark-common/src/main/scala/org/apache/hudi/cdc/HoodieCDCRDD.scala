@@ -28,16 +28,8 @@ import org.apache.avro.generic.{GenericRecord, GenericRecordBuilder, IndexedReco
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 
-import org.apache.hudi.AvroConversionUtils
+import org.apache.hudi.{AvroConversionUtils, HoodieFileIndex, HoodieMergeOnReadFileSplit, HoodieTableSchema, HoodieTableState, HoodieUnsafeRDD, LogFileIterator, LogIteratorUtils, RecordMergingFileIterator, SparkAdapterSupport}
 import org.apache.hudi.HoodieConversionUtils._
-import org.apache.hudi.HoodieFileIndex
-import org.apache.hudi.HoodieMergeOnReadFileSplit
-import org.apache.hudi.HoodieTableSchema
-import org.apache.hudi.HoodieTableState
-import org.apache.hudi.HoodieUnsafeRDD
-import org.apache.hudi.LogFileIterator
-import org.apache.hudi.LogIteratorUtils
-import org.apache.hudi.RecordMergingFileIterator
 import org.apache.hudi.HoodieDataSourceHelper.AvroDeserializerSupport
 import org.apache.hudi.cdc.CDCFileTypeEnum._
 import org.apache.hudi.common.config.HoodieMetadataConfig
@@ -54,6 +46,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.types.StringType
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -79,6 +72,8 @@ class HoodieCDCRDD(
     metaClient: HoodieTableMetaClient,
     parquetReader: PartitionedFile => Iterator[InternalRow],
     tableSchema: HoodieTableSchema,
+    cdcSchema: StructType,
+    requiredSchema: StructType,
     changes: Array[HoodieCDCFileGroupSplit])
   extends RDD[InternalRow](spark.sparkContext, Nil) with HoodieUnsafeRDD {
 
@@ -110,7 +105,7 @@ class HoodieCDCRDD(
   private class CDCFileGroupIterator(
       split: HoodieCDCFileGroupSplit,
       metaClient: HoodieTableMetaClient
-    ) extends Iterator[InternalRow] with AvroDeserializerSupport with Closeable {
+    ) extends Iterator[InternalRow] with SparkAdapterSupport with AvroDeserializerSupport with Closeable {
 
     private val fs = metaClient.getFs.getFileSystem
 
@@ -130,6 +125,8 @@ class HoodieCDCRDD(
 
     protected override val structTypeSchema: StructType = tableSchema.structTypeSchema
 
+    private val projection: UnsafeProjection = generateUnsafeProjection(cdcSchema, requiredSchema)
+
     private val serializer = sparkAdapter.createAvroSerializer(tableSchema.structTypeSchema,
       avroSchema, resolveAvroSchemaNullability(avroSchema))
 
@@ -142,9 +139,9 @@ class HoodieCDCRDD(
     private var logRecordIter: Iterator[(String,
       HoodieRecord[_ <: HoodieRecordPayload[_ <: HoodieRecordPayload[_ <: AnyRef]]])] = Iterator.empty
 
-    private var currentInstant: HoodieInstant = null
+    private var currentInstant: HoodieInstant = _
 
-    private var currentCdcFile: ChangeFileForSingleFileGroup = null
+    private var currentCdcFile: ChangeFileForSingleFileGroup = _
 
     private val requiredIndexes: List[Int] = 0.until(structTypeSchema.length).toList
 
@@ -213,7 +210,7 @@ class HoodieCDCRDD(
 
     override def hasNext: Boolean = hasNextInternal
 
-    override final def next(): InternalRow = recordToLoad
+    override final def next(): InternalRow = projection(recordToLoad)
 
     def loadNext(): Boolean = {
       var loaded = false
@@ -448,6 +445,9 @@ class HoodieCDCRDD(
     private def merge(curAvroRecord: GenericRecord, newRecord: HoodieRecord[_ <: HoodieRecordPayload[_]]): IndexedRecord = {
       newRecord.getData.combineAndGetUpdateValue(curAvroRecord, avroSchema, payloadProps).get()
     }
+
+    private def generateUnsafeProjection(from: StructType, to: StructType): UnsafeProjection =
+      sparkAdapter.createCatalystExpressionUtils().generateUnsafeProjection(from, to)
 
     override def close(): Unit = {}
   }
