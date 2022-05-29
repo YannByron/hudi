@@ -19,8 +19,18 @@
 package org.apache.hudi.cdc
 
 import org.apache.hudi.cdc.CDCFileTypeEnum.CDCFileType
+import org.apache.hudi.common.model.FileSlice
 
+/**
+ * This contains all the information that retrieve the change data at a single file group and
+ * at a single commit.
+ *
+ * @param cdcFileType the change type, which decide to how to retrieve the change data.
+ * @param cdcFile the file that the change data can be parsed from.
+ * @param dependentFileSlice the other files that are required when retrieve the change data.
+ */
 case class ChangeFileForSingleFileGroup(
   cdcFileType: CDCFileType,
-  cdcFile: String
+  cdcFile: String,
+  dependentFileSlice: Option[FileSlice] = None
 )

@@ -20,5 +20,11 @@ package org.apache.hudi.cdc
 
 object CDCFileTypeEnum extends Enumeration {
   type CDCFileType = Value
-  val CDCLogFile, PureAddFile, PureRemoveFile, MorLogFile = Value
+  // Here the `FileGroupReplaced` means a file group is replaced in an instant.
+  // Unlike the other cdc file type that there is a single file can be loaded to retrieve the changing data,
+  // if `FileGroupReplaced`, we will mark all data from a whole file slice as `delete`.
+  // So in [[ ChangeFileForSingleFileGroup ]], if `cdcFileType` is `FileGroupReplaced`,
+  // `cdcFile` must be null, and `dependentFileSlice` is not empty and represent the file group
+  // that will be marked as `delete`.
+  val CDCLogFile, PureAddFile, PureRemoveFile, MorLogFile, FileGroupReplaced = Value
 }

@@ -24,24 +24,16 @@ import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileSystem, Path}
 
 import org.apache.hudi.cdc.CDCFileTypeEnum._
-import org.apache.hudi.AvroConversionUtils
-import org.apache.hudi.DataSourceReadOptions
-import org.apache.hudi.HoodieDataSourceHelper
-import org.apache.hudi.HoodieTableSchema
+import org.apache.hudi.{AvroConversionUtils, DataSourceReadOptions, HoodieDataSourceHelper, HoodieTableSchema}
+import org.apache.hudi.HoodieConversionUtils._
 import org.apache.hudi.common.fs.FSUtils
-import org.apache.hudi.common.model.FileSlice
-import org.apache.hudi.common.model.HoodieBaseFile
-import org.apache.hudi.common.model.HoodieCommitMetadata
-import org.apache.hudi.common.model.HoodieFileFormat
-import org.apache.hudi.common.model.HoodieFileGroupId
-import org.apache.hudi.common.model.HoodieLogFile
-import org.apache.hudi.common.model.HoodieWriteStat
-import org.apache.hudi.common.model.WriteOperationType
-import org.apache.hudi.common.table.timeline.HoodieInstant
-import org.apache.hudi.common.table.timeline.HoodieTimeline
+import org.apache.hudi.common.model.{FileSlice, HoodieBaseFile, HoodieCommitMetadata, HoodieFileFormat, HoodieFileGroupId, HoodieLogFile, HoodieReplaceCommitMetadata, HoodieWriteStat, WriteOperationType}
+import org.apache.hudi.common.table.timeline.{HoodieInstant, HoodieTimeline}
+import org.apache.hudi.common.table.timeline.HoodieTimeline._
 import org.apache.hudi.common.table.HoodieTableConfig
 import org.apache.hudi.common.table.HoodieTableMetaClient
 import org.apache.hudi.common.table.TableSchemaResolver
+import org.apache.hudi.common.table.view.HoodieTableFileSystemView
 import org.apache.hudi.common.util.StringUtils
 import org.apache.hudi.exception.HoodieException
 import org.apache.hudi.internal.schema.InternalSchema
@@ -65,8 +57,6 @@ class CDCRelation(
     endInstant: String,
     options: Map[String, String]
 ) extends BaseRelation with PrunedFilteredScan with Logging {
-
-  sqlContext.sparkSession.sessionState.conf.setConfString("spark.sql.parquet.enableVectorizedReader", "false")
 
   val spark: SparkSession = sqlContext.sparkSession
 
@@ -101,63 +91,77 @@ class CDCRelation(
   val partitionColumns: Array[String] = tableConfig.getPartitionFields.orElse(Array.empty)
 
   val commits: Map[HoodieInstant, HoodieCommitMetadata] =
-    CDCRelation.getCompletedInstantInSpecifiedRange(metaClient, startInstant, endInstant)
+    CDCRelation.getCompletedCommitInstantInSpecifiedRange(metaClient, startInstant, endInstant)
 
-  val touchedPartition: Set[String] = commits.flatMap { case (_, commitMetadata) =>
-    commitMetadata.getPartitionToWriteStats.keySet().asScala
-  }.toSet
+
+  val fsView: HoodieTableFileSystemView = {
+    val touchedPartition = commits.flatMap { case (_, commitMetadata) =>
+      val partitionSet = commitMetadata.getPartitionToWriteStats.keySet()
+      val replacedPartitionSet = commitMetadata match {
+        case replaceCommitMetadata: HoodieReplaceCommitMetadata =>
+          replaceCommitMetadata.getPartitionToReplaceFileIds.keySet().asScala
+        case _ => Set.empty[String]
+      }
+      partitionSet.asScala ++ replacedPartitionSet
+    }.toSet
+    val touchedFiles = touchedPartition.flatMap { partition =>
+      val partitionPath = FSUtils.getPartitionPath(basePath, partition)
+      fs.listStatus(partitionPath)
+    }.toArray
+    new HoodieTableFileSystemView(metaClient, metaClient.getCommitsTimeline.filterCompletedInstants, touchedFiles)
+  }
 
   val changeFilesPerFileGroupAndCommit: Map[HoodieFileGroupId, HoodieCDCFileGroupSplit] = {
     // At the granularity of a file group, keep the mapping between each commit and
     // changes to this file group. Here the writeStat of this file group and this commit
     // is also kept to extract the base/log files if needed.
     val fgToCommitChanges = mutable.Map.empty[HoodieFileGroupId,
-      mutable.Map[HoodieInstant, (HoodieWriteStat, ChangeFileForSingleFileGroup)]]
+      mutable.Map[HoodieInstant, ChangeFileForSingleFileGroup]]
 
     commits.foreach {
       case (instant, commitMetadata)
           if CDCRelation.maybeChangeData(commitMetadata.getOperationType) =>
+        // parse `partitionToWriteStats` in the metadata of commit
         commitMetadata.getPartitionToWriteStats.asScala.foreach {
           case (partition, hoodieWriteStats) =>
             hoodieWriteStats.asScala.foreach { writeStat =>
               val fileGroupId = new HoodieFileGroupId(partition, writeStat.getFileId)
               // Identify the CDC source involved in this commit and
               // determine its type for subsequent loading using different methods.
-              val (cdcFileType, cdcFile) = parseWriteStat(commitMetadata.getOperationType, writeStat)
-              val realCdcFile = if (cdcFileType == PureRemoveFile) {
-                // This represents the operation is a delete or drop-partition operation,
-                // wherein no records have been writen out a new file.
-                // So, we find the previous file that this operation delete from, and treat each of
-                // records as a deleted one.
-                getPrevCommitFileWithSameFG(fileGroupId, writeStat.getPrevCommit)
-              } else {
-                cdcFile
-              }
-              val changeFile = ChangeFileForSingleFileGroup(cdcFileType, realCdcFile)
+              val changeFile = parseWriteStat(fileGroupId, instant, writeStat,
+                commitMetadata.getOperationType == WriteOperationType.DELETE)
               if (fgToCommitChanges.contains(fileGroupId)) {
-                fgToCommitChanges(fileGroupId)(instant) = (writeStat, changeFile)
+                fgToCommitChanges(fileGroupId)(instant) = changeFile
               } else {
-                fgToCommitChanges.put(fileGroupId, mutable.Map(instant -> (writeStat, changeFile)))
+                fgToCommitChanges.put(fileGroupId, mutable.Map(instant -> changeFile))
               }
             }
         }
+
+        // parse `partitionToReplaceFileIds` in the metadata of commit
+        commitMetadata match {
+          case replaceCommitMetadata: HoodieReplaceCommitMetadata =>
+            replaceCommitMetadata.getPartitionToReplaceFileIds.asScala.foreach {
+              case (partition, fileIds) =>
+                fileIds.asScala.foreach { fileId =>
+                  toScalaOption(fsView.fetchLatestFileSlice(partition, fileId)).foreach {
+                    fileSlice =>
+                      val fileGroupId = new HoodieFileGroupId(partition, fileId)
+                      val changeFile =
+                        ChangeFileForSingleFileGroup(FileGroupReplaced, null, Some(fileSlice))
+                      if (fgToCommitChanges.contains(fileGroupId)) {
+                        fgToCommitChanges(fileGroupId)(instant) = changeFile
+                      } else {
+                        fgToCommitChanges.put(fileGroupId, mutable.Map(instant -> changeFile))
+                      }
+                  }
+                }
+            }
+          case _ =>
+        }
     }
-    fgToCommitChanges.map { case (fgId, instantToWriteStatAndChanges) =>
-      val changesArr = instantToWriteStatAndChanges.map { case (instant, (writeStat, changes)) =>
-        (instant, changes)
-      }.toArray.sortBy(_._1)
-      val commitTimeAndFileSlice = changesArr.find(_._2.cdcFileType == MorLogFile).map {
-        case (instant, changeFile) =>
-          // if the cdc path is a log file, we need to find the base file and its preceding
-          // log files which will be used when load this log file.
-          // And since the commit scope read by CDC is continuous and the change
-          // of the same file group is also continuous, we only need to find the preceding
-          // file slice of the earliest commit required.
-          val fileSlice = buildDependentFileSliceForLogFile(
-            fgId, instant, changeFile.cdcFile, instantToWriteStatAndChanges(instant)._1)
-          (instant.getTimestamp, fileSlice)
-      }
-      (fgId, HoodieCDCFileGroupSplit(fgId, changesArr, commitTimeAndFileSlice))
+    fgToCommitChanges.map { case (fgId, instantToChanges) =>
+      (fgId, HoodieCDCFileGroupSplit(instantToChanges.toArray.sortBy(_._1)))
     }.toMap
   }
 
@@ -194,29 +198,38 @@ class CDCRelation(
     FSUtils.getBaseFile(fs, absPartitionPath, fgId.getFileId, commitTime).getPath.toUri.toString
   }
 
-  private def parseWriteStat(operation: WriteOperationType, writeStat: HoodieWriteStat): (CDCFileType, String) = {
+  private def parseWriteStat(
+      fileGroupId: HoodieFileGroupId,
+      instant: HoodieInstant,
+      writeStat: HoodieWriteStat,
+      isDeleteOperation: Boolean): ChangeFileForSingleFileGroup = {
     if (StringUtils.isNullOrEmpty(writeStat.getCDCPath)) {
       val path = writeStat.getPath
       if (path.endsWith(HoodieFileFormat.PARQUET.getFileExtension)) {
         // this is a base file
-        if (operation == WriteOperationType.DELETE
-          && writeStat.getNumWrites == 0L && writeStat.getNumDeletes != 0) {
-          // all the records in this file group have been deleted
-          (PureRemoveFile, null)
+        if (isDeleteOperation && writeStat.getNumWrites == 0L && writeStat.getNumDeletes != 0) {
+          // This is a delete operation wherein all the records in this file group are deleted
+          // and no records have been writen out a new file.
+          // So, we find the previous file that this operation delete from, and treat each of
+          // records as a deleted one.
+          val deletedFile = getPrevCommitFileWithSameFG(fileGroupId, writeStat.getPrevCommit)
+          ChangeFileForSingleFileGroup(PureRemoveFile, deletedFile)
         } else if (writeStat.getNumUpdateWrites == 0L && writeStat.getNumDeletes == 0
           && writeStat.getNumWrites == writeStat.getNumInserts) {
           // all the records in this file are new.
-          (PureAddFile, path)
+          ChangeFileForSingleFileGroup(PureAddFile, path)
         } else {
           throw new HoodieException("There should be a cdc log file.")
         }
       } else {
         // this is a log file
-        (MorLogFile, path)
+        val dependentFileSlice =
+          buildDependentFileSliceForLogFile(fileGroupId, instant, path, writeStat)
+        ChangeFileForSingleFileGroup(MorLogFile, path, Some(dependentFileSlice))
       }
     } else {
       // this is a cdc log
-      (CDCLogFile, writeStat.getCDCPath)
+      ChangeFileForSingleFileGroup(CDCLogFile, writeStat.getCDCPath)
     }
   }
 
@@ -234,10 +247,11 @@ class CDCRelation(
     val baseFileStatus = FSUtils.getBaseFile(fs, partitionPath, fgId.getFileId, baseCommitTime)
     val baseFile = new HoodieBaseFile(baseFileStatus)
 
+    val currentLogFileName = new Path(currentLogFile).getName
     val activeTimeLine = metaClient.getActiveTimeline
     val logFilesStr = HoodieCommitMetadata.getFileSliceForDeltaCommit(activeTimeLine.getInstantDetails(instant).get())
       .get(fgId).getRight.asScala
-      .filter(_ != currentLogFile)
+      .filter(_ != currentLogFileName)
       .map(new Path(partitionPath, _)).toArray
     val logFiles = fs.listStatus(logFilesStr).map(new HoodieLogFile(_))
     new FileSlice(fgId, baseCommitTime, baseFile, logFiles)
@@ -311,18 +325,27 @@ object CDCRelation {
     }
   }
 
-  def getCompletedInstantInSpecifiedRange(
+  def getCompletedCommitInstantInSpecifiedRange(
       metaClient: HoodieTableMetaClient,
       startTs: String,
       endTs: String): Map[HoodieInstant, HoodieCommitMetadata] = {
+    val actions = Set(COMMIT_ACTION, DELTA_COMMIT_ACTION, REPLACE_COMMIT_ACTION)
     val activeTimeLine = metaClient.getActiveTimeline
     val instanstAndCommitMetadatas = activeTimeLine.getInstantsAsList.asScala
-      .filter(s => s.isCompleted && HoodieTimeline.isInRange(s.getTimestamp, startTs, endTs))
+      .filter(s => s.isCompleted && isInRange(s.getTimestamp, startTs, endTs))
+      .filter(s => actions.contains(s.getAction.toLowerCase))
       .map { instant =>
-        val commitMetadata = HoodieCommitMetadata.fromBytes(
-          activeTimeLine.getInstantDetails(instant).get(),
-          classOf[HoodieCommitMetadata]
-        )
+        val commitMetadata = if (instant.getAction == HoodieTimeline.REPLACE_COMMIT_ACTION) {
+          HoodieReplaceCommitMetadata.fromBytes(
+            activeTimeLine.getInstantDetails(instant).get(),
+            classOf[HoodieReplaceCommitMetadata]
+          )
+        } else {
+          HoodieCommitMetadata.fromBytes(
+            activeTimeLine.getInstantDetails(instant).get(),
+            classOf[HoodieCommitMetadata]
+          )
+        }
         (instant, commitMetadata)
       }
     instanstAndCommitMetadatas.toMap

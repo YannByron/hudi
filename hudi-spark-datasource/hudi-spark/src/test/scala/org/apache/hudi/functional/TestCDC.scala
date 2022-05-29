@@ -67,10 +67,15 @@ class TestCDC extends HoodieClientTestBase with SparkDatasetMixin {
 
     val rows = spark.read.format("hudi")
       .option("hoodie.datasource.query.type", "cdc")
+//      .option("hoodie.datasource.read.begin.instanttime", "20220527174932731")
+//      .load("file:////Users/xunjing/hudi/hudi_cdc_cow_pt1")
 //      .option("hoodie.datasource.read.begin.instanttime", "20220428140802491")
 //        .load("file:////Users/xunjing/hudi/hudi_cdc_cow_nonpt1")
-      .option("hoodie.datasource.read.begin.instanttime", "20220523145053941")
-      .load("file:////Users/xunjing/hudi/hudi_cdc_mor_nonpt1")
+//      .option("hoodie.datasource.read.begin.instanttime", "20220523145053941")
+//      .load("file:////Users/xunjing/hudi/hudi_cdc_mor_nonpt1")
+        .option("hoodie.datasource.read.begin.instanttime", "20220527232309507")
+//        .option("hoodie.datasource.read.end.instanttime", "20220527232727644")
+        .load("file:////Users/xunjing/hudi/hudi_cdc_mor_pt2")
     rows.show(false)
   }
 }
