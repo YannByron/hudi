@@ -244,6 +244,10 @@ public class HoodieWriteStat implements Serializable {
     return cdcPath;
   }
 
+  public void setCDCPath(String cdcPath) {
+    this.cdcPath = cdcPath;
+  }
+
   public String getPartitionPath() {
     return partitionPath;
   }

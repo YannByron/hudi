@@ -26,6 +26,8 @@ import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hudi.cdc.CDCFileTypeEnum._
 import org.apache.hudi.{AvroConversionUtils, DataSourceReadOptions, HoodieDataSourceHelper, HoodieTableSchema, SparkAdapterSupport}
 import org.apache.hudi.HoodieConversionUtils._
+import org.apache.hudi.common.table.cdc.CDCUtils._
+import org.apache.hudi.common.table.cdc.CDCOperationEnum._
 import org.apache.hudi.common.fs.FSUtils
 import org.apache.hudi.common.model.{FileSlice, HoodieBaseFile, HoodieCommitMetadata, HoodieFileFormat, HoodieFileGroupId, HoodieLogFile, HoodieReplaceCommitMetadata, HoodieWriteStat, WriteOperationType}
 import org.apache.hudi.common.table.timeline.{HoodieInstant, HoodieTimeline}
@@ -159,6 +161,7 @@ class CDCRelation(
             }
           case _ =>
         }
+      case _ =>
     }
     fgToCommitChanges.map { case (fgId, instantToChanges) =>
       (fgId, HoodieCDCFileGroupSplit(instantToChanges.toArray.sortBy(_._1)))
@@ -264,24 +267,9 @@ class CDCRelation(
 
 object CDCRelation {
 
-  /* the suffix of cdc log file */
-  val CDC_SUFFIX = ".cdc"
-
-  /* the `op` column when enable cdc */
-  val CDC_OPERATION_TYPE = "op"
-
-  /* the timestamp when each of record is changed */
-  val CDC_COMMIT_TIMESTAMP = "ts_ms"
-
-  /* the pre image before one record is changed */
-  val CDC_BEFORE_IMAGE = "before"
-
-  /* the post image after one record is changed */
-  val CDC_AFTER_IMAGE = "after"
-
-  val CDC_OPERATION_DELETE: UTF8String = UTF8String.fromString("d")
-  val CDC_OPERATION_INSERT: UTF8String = UTF8String.fromString("i")
-  val CDC_OPERATION_UPDATE: UTF8String = UTF8String.fromString("u")
+  val CDC_OPERATION_DELETE: UTF8String = UTF8String.fromString(DELETE.getValue)
+  val CDC_OPERATION_INSERT: UTF8String = UTF8String.fromString(INSERT.getValue)
+  val CDC_OPERATION_UPDATE: UTF8String = UTF8String.fromString(UPDATE.getValue)
 
   def cdcSchema(): StructType = {
     StructType(

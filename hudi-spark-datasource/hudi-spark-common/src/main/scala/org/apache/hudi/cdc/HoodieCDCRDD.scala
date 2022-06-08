@@ -35,10 +35,11 @@ import org.apache.hudi.cdc.CDCFileTypeEnum._
 import org.apache.hudi.common.config.HoodieMetadataConfig
 import org.apache.hudi.common.model.{FileSlice, HoodieLogFile, HoodieRecord, HoodieRecordPayload}
 import org.apache.hudi.common.table.HoodieTableMetaClient
+import org.apache.hudi.common.table.cdc.CDCUtils
+import org.apache.hudi.common.table.log.CDCLogRecordReader
 import org.apache.hudi.common.table.timeline.HoodieInstant
 import org.apache.hudi.common.util.ValidationUtils.checkState
 import org.apache.hudi.config.HoodiePayloadConfig
-import org.apache.hudi.exception.HoodieException
 
 import org.apache.spark.{Partition, SerializableWritable, TaskContext}
 import org.apache.spark.rdd.RDD
@@ -46,6 +47,7 @@ import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.execution.datasources.PartitionedFile
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.avro.HoodieAvroDeserializer
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.types.StringType
 import org.apache.spark.unsafe.types.UTF8String
@@ -130,6 +132,9 @@ class HoodieCDCRDD(
     private val serializer = sparkAdapter.createAvroSerializer(tableSchema.structTypeSchema,
       avroSchema, resolveAvroSchemaNullability(avroSchema))
 
+    private val cdcRecordDeserializer: HoodieAvroDeserializer =
+      sparkAdapter.createAvroDeserializer(CDCUtils.CDC_SCHEMA, CDCRelation.cdcSchema())
+
     private val cdcFiles = split.commitToChanges.sortBy(_._1)
 
     private var cdcFileIdx = 0
@@ -138,6 +143,8 @@ class HoodieCDCRDD(
 
     private var logRecordIter: Iterator[(String,
       HoodieRecord[_ <: HoodieRecordPayload[_ <: HoodieRecordPayload[_ <: AnyRef]]])] = Iterator.empty
+
+    private var cdcRecordReader: CDCLogRecordReader = _
 
     private var currentInstant: HoodieInstant = _
 
@@ -176,8 +183,14 @@ class HoodieCDCRDD(
 
     private var dependentRecords: mutable.Map[String, GenericRecord] = mutable.Map.empty
 
+    private def needLoadNextFile: Boolean = {
+      !recordIter.hasNext &&
+        !logRecordIter.hasNext &&
+        (cdcRecordReader == null || !cdcRecordReader.hasNext)
+    }
+
     @tailrec final def hasNextInternal: Boolean = {
-      if (!recordIter.hasNext && !logRecordIter.hasNext) {
+      if (needLoadNextFile) {
         loadCdcFile()
       }
       if (currentCdcFile == null) {
@@ -197,7 +210,11 @@ class HoodieCDCRDD(
               hasNextInternal
             }
           case CDCLogFile =>
-            throw new HoodieException("hasNextInternal: Not support CDCLogFile.")
+            if (cdcRecordReader.hasNext && loadNext()) {
+              true
+            } else {
+              hasNextInternal
+            }
           case FileGroupReplaced =>
             if (recordIter.hasNext && loadNext()) {
               true
@@ -232,7 +249,7 @@ class HoodieCDCRDD(
               logWarning("can not get any record that have the same key with the deleting logRecord.")
             } else {
               // deleted record
-              recordToLoad.update(0, convertToUTF8String("d"))
+              recordToLoad.update(0, CDCRelation.CDC_OPERATION_DELETE)
               recordToLoad.update(2, convertRowToJsonString(deserialize(existingRecordOpt.get)))
               recordToLoad.update(3, null)
               loaded = true
@@ -242,7 +259,7 @@ class HoodieCDCRDD(
             if (existingRecordOpt.isEmpty) {
               // inserted record
               val insertedRecord = convertIndexedRecordToRow(indexedRecord.get)
-              recordToLoad.update(0, convertToUTF8String("i"))
+              recordToLoad.update(0, CDCRelation.CDC_OPERATION_INSERT)
               recordToLoad.update(2, null)
               recordToLoad.update(3, convertRowToJsonString(insertedRecord))
               // insert into records
@@ -253,10 +270,10 @@ class HoodieCDCRDD(
               val existingRecord = existingRecordOpt.get
               val merged = merge(existingRecord, logRecord)
               val mergeRow = convertIndexedRecordToRow(merged)
-              val dd = deserialize(existingRecord)
-              if (mergeRow != dd) {
-                recordToLoad.update(0, convertToUTF8String("u"))
-                recordToLoad.update(2, convertRowToJsonString(dd))
+              val existingRow = deserialize(existingRecord)
+              if (mergeRow != existingRow) {
+                recordToLoad.update(0, CDCRelation.CDC_OPERATION_UPDATE)
+                recordToLoad.update(2, convertRowToJsonString(existingRow))
                 recordToLoad.update(3, convertRowToJsonString(mergeRow))
                 // insert into records
                 dependentRecords(key) = serialize(mergeRow)
@@ -265,7 +282,9 @@ class HoodieCDCRDD(
             }
           }
         case CDCLogFile =>
-          throw new HoodieException("Not support CDCLogFile.")
+          val record = cdcRecordReader.next().asInstanceOf[GenericRecord]
+          recordToLoad = cdcRecordDeserializer.deserialize(record).get.asInstanceOf[InternalRow]
+          loaded = true
         case FileGroupReplaced =>
           val originRecord = recordIter.next()
           recordToLoad.update(2, convertRowToJsonString(originRecord))
@@ -275,6 +294,14 @@ class HoodieCDCRDD(
     }
 
     private def loadCdcFile(): Unit = {
+      // reset all the iterator or reader first.
+      recordIter = Iterator.empty
+      logRecordIter = Iterator.empty
+      if (cdcRecordReader != null) {
+        cdcRecordReader.close()
+        cdcRecordReader = null
+      }
+
       if (cdcFileIdx < cdcFiles.length) {
         val pair = cdcFiles(cdcFileIdx)
         currentInstant = pair._1
@@ -285,19 +312,17 @@ class HoodieCDCRDD(
             val fileStatus = fs.getFileStatus(absCDCPath)
             val pf = PartitionedFile(InternalRow.empty, absCDCPath.toUri.toString, 0, fileStatus.getLen)
             recordIter = parquetReader(pf)
-            logRecordIter = Iterator.empty
           case MorLogFile =>
             currentCdcFile.dependentFileSlice.foreach(loadDependentFileSliceIfNeeded)
             val absLogPath = new Path(basePath, currentCdcFile.cdcFile)
             val morSplit = HoodieMergeOnReadFileSplit(None, List(new HoodieLogFile(fs.getFileStatus(absLogPath))))
             val logFileIterator = new LogFileIterator(morSplit, tableSchema, tableSchema, tableState, conf)
             logRecordIter = logFileIterator.genericRecordIterWithKey()
-            recordIter = Iterator.empty
           case CDCLogFile =>
-            throw new HoodieException("Not support CDCLogFile.")
+            val absCDCPath = new Path(basePath, currentCdcFile.cdcFile)
+            cdcRecordReader = new CDCLogRecordReader(fs, absCDCPath)
           case FileGroupReplaced =>
             currentCdcFile.dependentFileSlice.foreach(loadDependentFileSliceIfNeeded)
-            logRecordIter = Iterator.empty
             recordIter = dependentRecords.values.map { record =>
               deserialize(record)
             }.iterator

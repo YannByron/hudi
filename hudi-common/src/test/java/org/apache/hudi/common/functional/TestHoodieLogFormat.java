@@ -19,6 +19,7 @@
 package org.apache.hudi.common.functional;
 
 import org.apache.hudi.avro.HoodieAvroUtils;
+import org.apache.hudi.avro.model.HoodieMetadataRecord;
 import org.apache.hudi.common.fs.FSUtils;
 import org.apache.hudi.common.model.DeleteRecord;
 import org.apache.hudi.common.model.HoodieArchivedLogFile;
@@ -26,6 +27,7 @@ import org.apache.hudi.common.model.HoodieAvroRecord;
 import org.apache.hudi.common.model.HoodieLogFile;
 import org.apache.hudi.common.model.HoodieRecord;
 import org.apache.hudi.common.model.HoodieTableType;
+import org.apache.hudi.common.table.cdc.CDCUtils;
 import org.apache.hudi.common.table.log.AppendResult;
 import org.apache.hudi.common.table.log.HoodieLogFileReader;
 import org.apache.hudi.common.table.log.HoodieLogFormat;
@@ -33,6 +35,7 @@ import org.apache.hudi.common.table.log.HoodieLogFormat.Reader;
 import org.apache.hudi.common.table.log.HoodieLogFormat.Writer;
 import org.apache.hudi.common.table.log.HoodieMergedLogRecordScanner;
 import org.apache.hudi.common.table.log.block.HoodieAvroDataBlock;
+import org.apache.hudi.common.table.log.block.HoodieCDCDataBlock;
 import org.apache.hudi.common.table.log.block.HoodieCommandBlock;
 import org.apache.hudi.common.table.log.block.HoodieDataBlock;
 import org.apache.hudi.common.table.log.block.HoodieDeleteBlock;
@@ -79,6 +82,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -94,6 +98,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
@@ -541,6 +546,84 @@ public class TestHoodieLogFormat extends HoodieCommonTestHarness {
         "Read records size should be equal to the written records size");
     assertEquals(copyOfRecords3, recordsRead3,
         "Both records lists should be the same. (ordering guaranteed)");
+    reader.close();
+  }
+
+  @Test
+  public void testCDCBlock() throws IOException, InterruptedException {
+    Writer writer = HoodieLogFormat.newWriterBuilder()
+        .onParentPath(partitionPath)
+        .withFileExtension(HoodieLogFile.DELTA_EXTENSION)
+        .withFileId("test-fileid1")
+        .overBaseCommit("100")
+        .withFs(fs)
+        .build();
+
+    GenericRecord record1 = CDCUtils.cdcRecord("i", "100",
+        null, "{\"uuid\": 1, \"name\": \"apple\"}, \"ts\": 1100}");
+    GenericRecord record2 = CDCUtils.cdcRecord("u", "100",
+        "{\"uuid\": 2, \"name\": \"banana\"}, \"ts\": 1000}",
+        "{\"uuid\": 2, \"name\": \"blueberry\"}, \"ts\": 1100}");
+    GenericRecord record3 = CDCUtils.cdcRecord("d", "100",
+        "{\"uuid\": 3, \"name\": \"cherry\"}, \"ts\": 1000}", null);
+    List<IndexedRecord> records = new ArrayList<>(Arrays.asList(record1, record2, record3));
+    Map<HoodieLogBlock.HeaderMetadataType, String> header = new HashMap<>();
+    header.put(HoodieLogBlock.HeaderMetadataType.INSTANT_TIME, "100");
+    header.put(HoodieLogBlock.HeaderMetadataType.SCHEMA, CDCUtils.CDC_SCHEMA_STRING);
+    HoodieDataBlock dataBlock = getDataBlock(HoodieLogBlockType.CDC_DATA_BLOCK, records, header);
+//    writer.appendBlock(dataBlock);
+    writer.close();
+
+    Path p = new Path("file:///Users/xunjing/hudi/hudi_cdc_cow_nonpt1/.hoodie/metadata/files/.files-0000_00000000000000.log.3_0-43-1338");
+    //    Path p = new Path("file:///Users/xunjing/hudi/hudi_cdc_file_test_2/.9a3451bc-24b1-4fb5-9e08-d40e8a3c5b0b-0_20220606231455431.log.1_0-59-46");
+    FileSystem fs = p.getFileSystem(new Configuration());
+    HoodieLogFile logFile = new HoodieLogFile(fs.getFileStatus(p));
+    Schema schema = HoodieAvroUtils.addMetadataFields(HoodieMetadataRecord.getClassSchema());
+    Reader reader = HoodieLogFormat.newReader(fs, logFile, schema);
+//    Reader reader = HoodieLogFormat.newReader(fs, writer.getLogFile(), CDCUtils.CDC_SCHEMA);
+    assertTrue(reader.hasNext());
+
+    HoodieLogBlock block = reader.next();
+    List<IndexedRecord> recordsRead = new ArrayList<>();
+    if (block instanceof HoodieDataBlock) {
+      HoodieDataBlock dataBlockRead = (HoodieDataBlock) block;
+      recordsRead = getRecords(dataBlockRead);
+      recordsRead.size();
+    } else {
+      HoodieMergedLogRecordScanner scanner = HoodieMergedLogRecordScanner.newBuilder()
+          .withFileSystem(fs)
+          .withBasePath(p.getParent().getParent().toUri().toString())
+          .withLogFilePaths(Collections.singletonList(p.toUri().toString()))
+          .withReaderSchema(schema)
+          .withLatestInstantTime("102")
+          .withMaxMemorySizeInBytes(10240L)
+          .withReadBlocksLazily(false)
+          .withReverseReader(false)
+          .withBufferSize(bufferSize)
+          .withSpillableMapBasePath(BASE_OUTPUT_PATH)
+          .build();
+
+      scanner.getRecords();
+    }
+//    assertEquals(3, recordsRead.size(),
+//        "Read records size should be equal to the written records size");
+//    assertEquals(dataBlockRead.getSchema(), CDCUtils.CDC_SCHEMA);
+//
+//    GenericRecord insert = (GenericRecord) recordsRead.stream()
+//        .filter(record -> record.get(0).toString().equals("i")).findFirst().get();
+//    assertNull(insert.get("before"));
+//    assertNotNull(insert.get("after"));
+//    GenericRecord update = (GenericRecord) recordsRead.stream()
+//        .filter(record -> record.get(0).toString().equals("u")).findFirst().get();
+//    assertNotNull(update.get("before"));
+//    assertNotNull(update.get("after"));
+//    assertTrue(update.get("before").toString().contains("banana"));
+//    assertTrue(update.get("after").toString().contains("blueberry"));
+//    GenericRecord delete = (GenericRecord) recordsRead.stream()
+//        .filter(record -> record.get(0).toString().equals("d")).findFirst().get();
+//    assertNotNull(delete.get("before"));
+//    assertNull(delete.get("after"));
+
     reader.close();
   }
 
@@ -2009,6 +2092,8 @@ public class TestHoodieLogFormat extends HoodieCommonTestHarness {
   private HoodieDataBlock getDataBlock(HoodieLogBlockType dataBlockType, List<IndexedRecord> records,
                                        Map<HeaderMetadataType, String> header, Path pathForReader) {
     switch (dataBlockType) {
+      case CDC_DATA_BLOCK:
+        return new HoodieCDCDataBlock(records, header, HoodieRecord.RECORD_KEY_METADATA_FIELD);
       case AVRO_DATA_BLOCK:
         return new HoodieAvroDataBlock(records, header, HoodieRecord.RECORD_KEY_METADATA_FIELD);
       case HFILE_DATA_BLOCK:
