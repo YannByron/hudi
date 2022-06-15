@@ -126,10 +126,16 @@ public class HoodieTableConfig extends HoodieConfig {
       .withDocumentation("Columns used to uniquely identify the table. Concatenated values of these fields are used as "
           + " the record key component of HoodieKey.");
 
-  public static final ConfigProperty<Boolean> CDF_ENABLED = ConfigProperty
+  public static final ConfigProperty<Boolean> CDC_ENABLED = ConfigProperty
       .key("hoodie.table.cdf.enabled")
       .defaultValue(false)
-      .withDocumentation("When enable, hudi keeps the changing data if necessary, and can be queried as a CDC format.");
+      .withDocumentation("When enable, persist the change data if necessary, and can be queried as a CDC query mode.");
+
+  public static final ConfigProperty<Boolean> CDC_SUPPLEMENTAL_LOGGING_ENABLED = ConfigProperty
+      .key("hoodie.table.cdc.supplemental.logging")
+      .defaultValue(true)
+      .withDocumentation("When enable, persist all the required information about the change data, "
+          + "including 'before' and 'after'. Otherwise, just persist the 'op' and the record key.");
 
   public static final ConfigProperty<String> CREATE_SCHEMA = ConfigProperty
       .key("hoodie.table.create.schema")
@@ -600,8 +606,12 @@ public class HoodieTableConfig extends HoodieConfig {
     return getStringOrDefault(RECORDKEY_FIELDS, HoodieRecord.RECORD_KEY_METADATA_FIELD);
   }
 
-  public boolean isEnabledCDF() {
-    return getBooleanOrDefault(CDF_ENABLED);
+  public boolean isCDCEnabled() {
+    return getBooleanOrDefault(CDC_ENABLED);
+  }
+
+  public boolean isCDCSupplementalLoggingEnabled() {
+    return getBooleanOrDefault(CDC_SUPPLEMENTAL_LOGGING_ENABLED);
   }
 
   public String getKeyGeneratorClassName() {

@@ -21,7 +21,7 @@ import org.apache.hudi.DataSourceWriteOptions.MOR_TABLE_TYPE_OPT_VAL
 import org.apache.hudi.common.model.HoodieRecord
 import org.apache.hudi.common.util.ReflectionUtils
 import org.apache.hudi.{DataSourceReadOptions, HoodieSparkUtils, SparkAdapterSupport}
-import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, UnresolvedRelation, UnresolvedStar}
+import org.apache.spark.sql.catalyst.analysis.{UnresolvedAttribute, UnresolvedRelation, UnresolvedStar, UnresolvedTableValuedFunction}
 import org.apache.spark.sql.catalyst.catalog.{CatalogUtils, HoodieCatalogTable}
 import org.apache.spark.sql.catalyst.expressions.{Alias, Attribute, AttributeReference, Expression, GenericInternalRow, Literal, NamedExpression}
 import org.apache.spark.sql.catalyst.plans.Inner
@@ -126,18 +126,22 @@ case class HoodieAnalysis(sparkSession: SparkSession) extends Rule[LogicalPlan]
         val tableId = getTableIdentifier(table)
         val catalogTable = sparkSession.sessionState.catalog.getTableMetadata(tableId)
         CompactionHoodieTableCommand(catalogTable, operation, options)
+
       // Convert to CompactionHoodiePathCommand
       case CompactionPath(path, operation, options) =>
         CompactionHoodiePathCommand(path, operation, options)
+
       // Convert to CompactionShowOnTable
       case CompactionShowOnTable(table, limit)
         if sparkAdapter.isHoodieTable(table, sparkSession) =>
         val tableId = getTableIdentifier(table)
         val catalogTable = sparkSession.sessionState.catalog.getTableMetadata(tableId)
         CompactionShowHoodieTableCommand(catalogTable, limit)
+
       // Convert to CompactionShowHoodiePathCommand
       case CompactionShowOnPath(path, limit) =>
         CompactionShowHoodiePathCommand(path, limit)
+
       // Convert to HoodieCallProcedureCommand
       case c@CallCommand(_, _) =>
         val procedure: Option[Procedure] = loadProcedure(c.name)
@@ -147,6 +151,12 @@ case class HoodieAnalysis(sparkSession: SparkSession) extends Rule[LogicalPlan]
         } else {
           c
         }
+
+      // TableValuedFunction
+      case tvf @ UnresolvedTableValuedFunction(functionName, functionArgs, _)
+        if functionArgs.forall(_.resolved) =>
+          HoodieTableValueFunctions.resolveHoodieTvf(sparkSession, tvf)
+
       case _ => plan
     }
   }

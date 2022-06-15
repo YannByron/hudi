@@ -106,10 +106,9 @@ public class HoodieSortedMergeHandle<T extends HoodieRecordPayload, I, K, O> ext
         // TODO: sorted mergehandle：这里记录insert的记录的before and after；
         insertRecordsWritten++;
         writtenRecordKeys.add(keyToPreWrite);
-        if (cdfEnabled) {
+        if (cdcEnabled) {
           cdcData.add(CDCUtils.cdcRecord(CDCOperationEnum.INSERT.getValue(),
-              instantTime, tableSchemaWithMetaFields,
-              null, addCommitMetadata((GenericRecord) insertRecord.get(), hoodieRecord)));
+              instantTime,null, addCommitMetadata((GenericRecord) insertRecord.get(), hoodieRecord)));
         }
       } catch (IOException e) {
         throw new HoodieUpsertException("Failed to write records", e);
@@ -135,10 +134,9 @@ public class HoodieSortedMergeHandle<T extends HoodieRecordPayload, I, K, O> ext
           }
           writeRecord(hoodieRecord, insertRecord);
           insertRecordsWritten++;
-          if (cdfEnabled) {
+          if (cdcEnabled) {
             cdcData.add(CDCUtils.cdcRecord(CDCOperationEnum.INSERT.getValue(),
-                instantTime, tableSchemaWithMetaFields,
-                null, addCommitMetadata((GenericRecord) insertRecord.get(), hoodieRecord)));
+                instantTime, null, addCommitMetadata((GenericRecord) insertRecord.get(), hoodieRecord)));
           }
         }
       } catch (IOException e) {

@@ -98,7 +98,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.params.provider.Arguments.arguments;
@@ -571,16 +570,16 @@ public class TestHoodieLogFormat extends HoodieCommonTestHarness {
     header.put(HoodieLogBlock.HeaderMetadataType.INSTANT_TIME, "100");
     header.put(HoodieLogBlock.HeaderMetadataType.SCHEMA, CDCUtils.CDC_SCHEMA_STRING);
     HoodieDataBlock dataBlock = getDataBlock(HoodieLogBlockType.CDC_DATA_BLOCK, records, header);
-//    writer.appendBlock(dataBlock);
+    //    writer.appendBlock(dataBlock);
     writer.close();
 
-    Path p = new Path("file:///Users/xunjing/hudi/hudi_cdc_cow_nonpt1/.hoodie/metadata/files/.files-0000_00000000000000.log.3_0-43-1338");
+    Path p = new Path("file:///Users/xunjing/hudi/testDataSourceWrite/.hoodie/metadata/files/.files-0000_20220609222719670001.log.1_0-87-108");
     //    Path p = new Path("file:///Users/xunjing/hudi/hudi_cdc_file_test_2/.9a3451bc-24b1-4fb5-9e08-d40e8a3c5b0b-0_20220606231455431.log.1_0-59-46");
     FileSystem fs = p.getFileSystem(new Configuration());
     HoodieLogFile logFile = new HoodieLogFile(fs.getFileStatus(p));
     Schema schema = HoodieAvroUtils.addMetadataFields(HoodieMetadataRecord.getClassSchema());
     Reader reader = HoodieLogFormat.newReader(fs, logFile, schema);
-//    Reader reader = HoodieLogFormat.newReader(fs, writer.getLogFile(), CDCUtils.CDC_SCHEMA);
+    //    Reader reader = HoodieLogFormat.newReader(fs, writer.getLogFile(), CDCUtils.CDC_SCHEMA);
     assertTrue(reader.hasNext());
 
     HoodieLogBlock block = reader.next();
@@ -605,24 +604,24 @@ public class TestHoodieLogFormat extends HoodieCommonTestHarness {
 
       scanner.getRecords();
     }
-//    assertEquals(3, recordsRead.size(),
-//        "Read records size should be equal to the written records size");
-//    assertEquals(dataBlockRead.getSchema(), CDCUtils.CDC_SCHEMA);
-//
-//    GenericRecord insert = (GenericRecord) recordsRead.stream()
-//        .filter(record -> record.get(0).toString().equals("i")).findFirst().get();
-//    assertNull(insert.get("before"));
-//    assertNotNull(insert.get("after"));
-//    GenericRecord update = (GenericRecord) recordsRead.stream()
-//        .filter(record -> record.get(0).toString().equals("u")).findFirst().get();
-//    assertNotNull(update.get("before"));
-//    assertNotNull(update.get("after"));
-//    assertTrue(update.get("before").toString().contains("banana"));
-//    assertTrue(update.get("after").toString().contains("blueberry"));
-//    GenericRecord delete = (GenericRecord) recordsRead.stream()
-//        .filter(record -> record.get(0).toString().equals("d")).findFirst().get();
-//    assertNotNull(delete.get("before"));
-//    assertNull(delete.get("after"));
+    //    assertEquals(3, recordsRead.size(),
+    //        "Read records size should be equal to the written records size");
+    //    assertEquals(dataBlockRead.getSchema(), CDCUtils.CDC_SCHEMA);
+    //
+    //    GenericRecord insert = (GenericRecord) recordsRead.stream()
+    //        .filter(record -> record.get(0).toString().equals("i")).findFirst().get();
+    //    assertNull(insert.get("before"));
+    //    assertNotNull(insert.get("after"));
+    //    GenericRecord update = (GenericRecord) recordsRead.stream()
+    //        .filter(record -> record.get(0).toString().equals("u")).findFirst().get();
+    //    assertNotNull(update.get("before"));
+    //    assertNotNull(update.get("after"));
+    //    assertTrue(update.get("before").toString().contains("banana"));
+    //    assertTrue(update.get("after").toString().contains("blueberry"));
+    //    GenericRecord delete = (GenericRecord) recordsRead.stream()
+    //        .filter(record -> record.get(0).toString().equals("d")).findFirst().get();
+    //    assertNotNull(delete.get("before"));
+    //    assertNull(delete.get("after"));
 
     reader.close();
   }

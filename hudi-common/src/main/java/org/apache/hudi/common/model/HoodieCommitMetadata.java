@@ -241,35 +241,37 @@ public class HoodieCommitMetadata implements Serializable {
     return getObjectMapper().readValue(jsonStr, clazz);
   }
 
-  public static Map<HoodieFileGroupId, Pair<String, List<String>>> getFileSliceForDeltaCommit(byte[] bytes) throws Exception {
+  /**
+   *
+   */
+  public static Pair<String, List<String>> getFileSliceForFileGroupFromDeltaCommit(
+      byte[] bytes, HoodieFileGroupId fileGroupId)
+      throws Exception {
     String jsonStr = new String(bytes, StandardCharsets.UTF_8);
-    if (jsonStr == null || jsonStr.isEmpty()) {
+    if (jsonStr.isEmpty()) {
       return null;
     }
-    Map<HoodieFileGroupId, Pair<String, List<String>>> fgToSlice = new HashMap<>();
+
     JsonNode ptToWriteStatsMap = getObjectMapper().readTree(jsonStr).get("partitionToWriteStats");
     Iterator<Map.Entry<String, JsonNode>> pts = ptToWriteStatsMap.fields();
     while (pts.hasNext()) {
       Map.Entry<String, JsonNode> ptToWriteStats = pts.next();
       if (ptToWriteStats.getValue().isArray()) {
-        Iterator<JsonNode> writeStatsIter = ptToWriteStats.getValue().iterator();
-
-        while (writeStatsIter.hasNext()) {
-          JsonNode writeStat = writeStatsIter.next();
-          if (writeStat.hasNonNull("baseFile")) {
-            HoodieFileGroupId fgId = new HoodieFileGroupId(ptToWriteStats.getKey(), writeStat.get("fileId").asText());
+        for (JsonNode writeStat : ptToWriteStats.getValue()) {
+          HoodieFileGroupId fgId = new HoodieFileGroupId(ptToWriteStats.getKey(), writeStat.get("fileId").asText());
+          if (fgId.equals(fileGroupId)) {
             String baseFile = writeStat.get("baseFile").asText();
             ArrayNode logFilesNode = (ArrayNode) writeStat.get("logFiles");
             List<String> logFiles = new ArrayList<>();
             for (JsonNode logFile : logFilesNode) {
               logFiles.add(logFile.asText());
             }
-            fgToSlice.put(fgId, Pair.of(baseFile, logFiles));
+            return Pair.of(baseFile, logFiles);
           }
         }
       }
     }
-    return fgToSlice;
+    return null;
   }
 
   // Here the functions are named "fetch" instead of "get", to get avoid of the json conversion.

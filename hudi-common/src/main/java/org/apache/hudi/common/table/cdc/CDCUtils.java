@@ -20,15 +20,7 @@ package org.apache.hudi.common.table.cdc;
 
 import org.apache.avro.Schema;
 import org.apache.avro.generic.GenericData;
-import org.apache.avro.generic.GenericDatumWriter;
 import org.apache.avro.generic.GenericRecord;
-import org.apache.avro.io.DatumWriter;
-import org.apache.avro.io.EncoderFactory;
-import org.apache.avro.io.JsonEncoder;
-
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 
 public class CDCUtils {
 
@@ -44,25 +36,32 @@ public class CDCUtils {
   /* the post-image after one record is changed */
   public static final String CDC_AFTER_IMAGE = "after";
 
+  public static final String[] CDC_COLUMNS = new String[] {
+      CDC_OPERATION_TYPE,
+      CDC_COMMIT_TIMESTAMP,
+      CDC_BEFORE_IMAGE,
+      CDC_AFTER_IMAGE
+  };
+
   public static final String CDC_SCHEMA_STRING = "{\"type\":\"record\",\"name\":\"Record\","
       + "\"fields\":["
-      + "{\"name\":\"op\",\"type\":[\"string\",\"null\"]},"
-      + "{\"name\":\"ts_ms\",\"type\":[\"string\",\"null\"]},"
-      + "{\"name\":\"before\",\"type\":[\"string\",\"null\"]},"
-      + "{\"name\":\"after\",\"type\":[\"string\",\"null\"]}"
+      + "{\"name\":\"op\",\"type\":\"string\"},"
+      + "{\"name\":\"ts_ms\",\"type\":\"string\"},"
+      + "{\"name\":\"before\",\"type\":\"string\"},"
+      + "{\"name\":\"after\",\"type\":\"string\"}"
       + "]}";
 
   public static final Schema CDC_SCHEMA = new Schema.Parser().parse(CDC_SCHEMA_STRING);
 
-  public static GenericData.Record cdcRecord(String op, String commitTime, Schema originSchema,
-                                             GenericRecord before, GenericRecord after) {
-    String beforeJsonStr = recordToJson(originSchema, before);
-    String afterJsonStr = recordToJson(originSchema, after);
+  public static GenericData.Record cdcRecord(
+      String op, String commitTime, GenericRecord before, GenericRecord after) {
+    String beforeJsonStr = recordToJson(before);
+    String afterJsonStr = recordToJson(after);
     return cdcRecord(op, commitTime, beforeJsonStr, afterJsonStr);
   }
 
-  public static GenericData.Record cdcRecord(String op, String commitTime,
-                                             String before, String after) {
+  public static GenericData.Record cdcRecord(
+      String op, String commitTime, String before, String after) {
     GenericData.Record record = new GenericData.Record(CDC_SCHEMA);
     record.put(CDC_OPERATION_TYPE, op);
     record.put(CDC_COMMIT_TIMESTAMP, commitTime);
@@ -71,20 +70,7 @@ public class CDCUtils {
     return record;
   }
 
-  public static String recordToJson(Schema schema, GenericRecord record) {
-    if (record == null) {
-      return null;
-    }
-    ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-    DatumWriter<GenericRecord> writer = new GenericDatumWriter<>(schema);
-    JsonEncoder encoder;
-    try {
-      encoder = EncoderFactory.get().jsonEncoder(schema, outputStream);
-      writer.write(record, encoder);
-      encoder.flush();
-    } catch (IOException e) {
-      e.printStackTrace();
-    }
-    return new String(outputStream.toByteArray(), StandardCharsets.UTF_8);
+  public static String recordToJson(GenericRecord record) {
+    return GenericData.get().toString(record);
   }
 }

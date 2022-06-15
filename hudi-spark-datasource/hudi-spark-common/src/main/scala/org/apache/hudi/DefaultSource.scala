@@ -105,7 +105,7 @@ class DefaultSource extends RelationProvider
 
     log.info(s"Is bootstrapped table => $isBootstrappedTable, tableType is: $tableType, queryType is: $queryType")
     if (metaClient.getCommitsTimeline.filterCompletedInstants.countInstants() == 0) {
-      new EmptyRelation(sqlContext, metaClient)
+      new EmptyRelation(sqlContext, metaClient, queryType == QUERY_TYPE_CDC_OPT_VAL)
     } else {
       (tableType, queryType, isBootstrappedTable) match {
         case (_, QUERY_TYPE_CDC_OPT_VAL, _) =>
@@ -191,17 +191,23 @@ class DefaultSource extends RelationProvider
     }
     val metaClient = HoodieTableMetaClient.builder().setConf(
       sqlContext.sparkSession.sessionState.newHadoopConf()).setBasePath(path.get).build()
-    val schemaResolver = new TableSchemaResolver(metaClient)
-    val sqlSchema =
-      try {
-        val avroSchema = schemaResolver.getTableAvroSchema
-        AvroConversionUtils.convertAvroSchemaToStructType(avroSchema)
-      } catch {
-        case _: Exception =>
-          require(schema.isDefined, "Fail to resolve source schema")
-          schema.get
-      }
-    (shortName(), sqlSchema)
+
+    if (CDCRelation.isCDCTable(metaClient)
+      && parameters.get(DataSourceReadOptions.QUERY_TYPE.key).contains(DataSourceReadOptions.QUERY_TYPE_CDC_OPT_VAL)) {
+      (shortName(), CDCRelation.cdcSchema())
+    } else {
+      val schemaResolver = new TableSchemaResolver(metaClient)
+      val sqlSchema =
+        try {
+          val avroSchema = schemaResolver.getTableAvroSchema
+          AvroConversionUtils.convertAvroSchemaToStructType(avroSchema)
+        } catch {
+          case _: Exception =>
+            require(schema.isDefined, "Fail to resolve source schema")
+            schema.get
+        }
+      (shortName(), sqlSchema)
+    }
   }
 
   override def createSource(sqlContext: SQLContext,

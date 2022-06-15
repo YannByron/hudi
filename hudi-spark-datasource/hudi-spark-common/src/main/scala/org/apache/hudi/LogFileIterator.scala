@@ -20,24 +20,26 @@ package org.apache.hudi
 
 import org.apache.avro.Schema
 import org.apache.avro.generic.{GenericRecord, GenericRecordBuilder, IndexedRecord}
+
 import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.mapred.JobConf
+
 import org.apache.hudi.HoodieConversionUtils.toScalaOption
 import org.apache.hudi.HoodieDataSourceHelper.AvroDeserializerSupport
 import org.apache.hudi.common.model.{HoodieRecord, HoodieRecordPayload}
 import org.apache.hudi.config.HoodiePayloadConfig
 import org.apache.hudi.hadoop.utils.HoodieRealtimeRecordReaderUtils.getMaxCompactionMemoryInBytes
-import LogIteratorUtils._
-import org.apache.hudi.io.HoodieWriteHandle
+import org.apache.hudi.LogIteratorUtils._
+
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.UnsafeProjection
 import org.apache.spark.sql.types.StructType
 
 import java.io.Closeable
 import java.util.Properties
+
 import scala.annotation.tailrec
 import scala.collection.JavaConverters._
-import scala.collection.mutable
 
 /**
  * Provided w/ instance of [[HoodieMergeOnReadFileSplit]], iterates over all of the records stored in
@@ -48,8 +50,7 @@ class LogFileIterator(
     tableSchema: HoodieTableSchema,
     requiredSchema: HoodieTableSchema,
     tableState: HoodieTableState,
-    config: Configuration,
-    outputDeletedRecord: Boolean = false)
+    config: Configuration)
   extends Iterator[InternalRow] with Closeable with AvroDeserializerSupport {
 
   protected val maxCompactionMemoryInBytes: Long = getMaxCompactionMemoryInBytes(new JobConf(config))
@@ -86,17 +87,9 @@ class LogFileIterator(
 
   val logRecords = logScanner.getRecords.asScala
 
-  def genericRecordIterWithKey(): Iterator[(String, HoodieRecord[_ <: HoodieRecordPayload[_ <: HoodieRecordPayload[_ <: AnyRef]]])] = logRecords.iterator
-//    .map {
-//    case (key, record) =>
-//      val avroRecordOpt = record.getData.getInsertValue(logFileReaderAvroSchema, payloadProps)
-//      if (avroRecordOpt.isPresent) {
-//        (key, projectAvroUnsafe(
-//          avroRecordOpt.get(), requiredAvroSchema, requiredSchemaFieldOrdinals, recordBuilder))
-//      } else {
-//        (key, HoodieWriteHandle.IGNORE_RECORD)
-//      }
-//  }
+  def genericRecordIterWithKey(): Iterator[(String, HoodieRecord[_ <: HoodieRecordPayload[_ <: HoodieRecordPayload[_ <: AnyRef]]])] = {
+    logRecords.iterator.asInstanceOf[Iterator[(String, HoodieRecord[_ <: HoodieRecordPayload[_ <: HoodieRecordPayload[_ <: AnyRef]]])]]
+  }
 
   // NOTE: This iterator iterates over already projected (in required schema) records
   // NOTE: This have to stay lazy to make sure it's initialized only at the point where it's

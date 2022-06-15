@@ -29,7 +29,7 @@ import org.apache.hudi.common.model.FileSlice
  * @param cdcFile the file that the change data can be parsed from.
  * @param dependentFileSlice the other files that are required when retrieve the change data.
  */
-case class ChangeFileForSingleFileGroup(
+case class ChangeFileForSingleFileGroupAndCommit(
   cdcFileType: CDCFileType,
   cdcFile: String,
   dependentFileSlice: Option[FileSlice] = None
